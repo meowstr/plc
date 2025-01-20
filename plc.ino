@@ -73,6 +73,28 @@ byte brCloseChar[8] = {
   0b00000
 };
 
+byte doubleBrChar[8] = {
+  0b00000,
+  0b00000,
+  0b00000,
+  0b11111,
+  0b01010,
+  0b01010,
+  0b01010,
+  0b01010
+};
+
+byte brSplitChar[8] = {
+  0b01010,
+  0b01010,
+  0b01010,
+  0b11011,
+  0b00000,
+  0b00000,
+  0b00000,
+  0b00000
+};
+
 // clang-format on
 
 static const int BUTTON_VALUE_LIST[] = {
@@ -85,6 +107,17 @@ static const int BUTTON_VALUE_LIST[] = {
 };
 
 enum {
+    CHAR_XIO = 0,
+    CHAR_XIC,
+    CHAR_OTE,
+    CHAR_BR,
+    CHAR_BR_OPEN,
+    CHAR_BR_CLOSE,
+    CHAR_BR_SPLIT,
+    CHAR_DOUBLE_BR,
+};
+
+enum {
     BUTTON_RIGHT = 0,
     BUTTON_UP,
     BUTTON_DOWN,
@@ -94,7 +127,7 @@ enum {
 };
 
 static enum {
-    LOOP_LADDER,
+    LOOP_LADDER = 0,
     LOOP_IO,
     LOOP_RUN,
 } loop_id;
@@ -102,15 +135,204 @@ static enum {
 static uint8_t lastIoA = 0;
 static uint8_t lastIoB = 0;
 
+static const char * IO_NAME_LIST = "abcdefghABCDEFGH";
+
+enum {
+  CMD_NULL = 0,
+  CMD_BR,
+  CMD_XIO,
+  CMD_XIC,
+  CMD_OTE,
+};
+
+static int * cmd_grid;
+static int * data_grid;
+
+static int program_width = 16;
+static int program_height = 8;
+
+static int * rung_cmd_list( int rung )
+{
+    return cmd_grid + rung * program_width;
+}
+
+static int * rung_data_list( int rung )
+{
+    return data_grid + rung * program_width;
+}
+
 static void render_io()
 {
     lcd.setCursor( 0, 0 );
-    lcd.print( "0123456789abcdef" );
+    lcd.print( IO_NAME_LIST );
     lcd.setCursor( 0, 1 );
     for ( int i = 0; i < 8; i++ )
         lcd.print( ( lastIoA >> i & 1 ) ? '1' : '.' );
     for ( int i = 0; i < 8; i++ )
         lcd.print( ( lastIoB >> i & 1 ) ? '1' : '.' );
+}
+
+// ..-..-..-..-..-0
+// ................
+
+enum { 
+    SEG_NO_BR = 0,
+    SEG_OPEN_BR,
+    SEG_CLOSE_BR,
+    SEG_OPENCLOSE_BR,
+    SEG_BR,
+};
+
+static struct {
+    int cmd;
+    int data;
+
+    int branch;
+
+    int branch_cmd;
+    int branch_data;
+
+} segment_list[5];
+
+static void setup_ladder( int rung ) 
+{
+    int * cmd_list = rung_cmd_list( rung );
+    int * data_list = rung_data_list( rung );
+
+    for ( int i = 0; i < 5; i++ ) {
+        segment_list[ i ].cmd = CMD_NULL;
+        segment_list[ i ].branch_cmd = CMD_NULL;
+        segment_list[ i ].branch = SEG_NO_BR;
+    }
+
+
+    int x = 0;
+    int i = 1;
+
+    int br_state = 0;
+    int br_x = 0;
+
+    while ( cmd_list[ i ] != CMD_NULL ) {
+        int cmd = cmd_list[ i ];
+
+        if ( br_state == 0 && cmd == CMD_BR ) {
+            br_state = 1;
+            br_x = x;
+            segment_list[ x ].branch = SEG_OPEN_BR;
+            i++;
+            continue;
+        }
+
+        if ( br_state == 1 && cmd == CMD_BR ) {
+            br_state = 2;
+            i++;
+            continue;
+        }
+
+        if ( br_state == 2 && cmd == CMD_BR ) {
+            br_state = 0;
+
+            int last = max( x, br_x ) - 1;
+            if ( segment_list[ last ].branch == SEG_OPEN_BR ) {
+                segment_list[ last ].branch = SEG_OPENCLOSE_BR;
+            } else {
+                segment_list[ last ].branch = SEG_CLOSE_BR;
+            }
+            x = last + 1;
+            i++;
+            continue;
+        }
+
+        if ( br_state != 2 ) {
+            segment_list[ x ].cmd = cmd;
+            segment_list[ x ].data = data_list[ i ];
+            if ( br_state == 1 && segment_list[ x ].branch == SEG_NO_BR ) {
+                segment_list[ x ].branch = SEG_BR;
+            }
+            x++;
+        } else {
+            segment_list[ br_x ].branch_cmd = cmd;
+            segment_list[ br_x ].branch_data = data_list[ i ];
+            if ( segment_list[ br_x ].branch == SEG_NO_BR ) {
+                segment_list[ br_x ].branch = SEG_BR;
+            }
+            br_x++;
+        }
+
+        i++;
+    }
+}
+
+static void render_ladder( int rung )
+{
+    setup_ladder( rung );
+
+    lcd.setCursor( 0, 0 );
+
+    for ( int i = 0; i < 5; i++ ) {
+        lcd.setCursor( i * 3, 0 );
+        lcd.print( "---" );
+        lcd.setCursor( i * 3, 0 );
+
+        //lcd.print( segment_list[i].cmd );
+        if ( segment_list[ i ].cmd == CMD_XIO ) {
+            lcd.write( CHAR_XIO );
+        }
+        if ( segment_list[ i ].cmd == CMD_XIC ) {
+            lcd.write( CHAR_XIC );
+        }
+
+        if ( segment_list[ i ].branch != SEG_NO_BR ) {
+            lcd.setCursor( i * 3, 1 );
+            lcd.print( "---" );
+            lcd.setCursor( i * 3, 1 );
+
+            if ( segment_list[ i ].branch_cmd == CMD_XIO ) {
+                lcd.write( CHAR_XIO );
+            }
+            if ( segment_list[ i ].branch_cmd == CMD_XIC ) {
+                lcd.write( CHAR_XIC );
+            }
+        }
+
+        int branch = segment_list[ i ].branch;
+
+        if ( i > 0 && ( branch == SEG_OPEN_BR || branch == SEG_OPENCLOSE_BR ) ) {
+            if ( segment_list[ i - 1 ].branch == SEG_NO_BR ) {
+                lcd.setCursor( i * 3 - 1, 0 );
+                lcd.write( CHAR_BR );
+                lcd.setCursor( i * 3 - 1, 1 );
+                lcd.write( CHAR_BR_OPEN );
+            } else {
+                lcd.setCursor( i * 3 - 1, 0 );
+                lcd.write( CHAR_DOUBLE_BR );
+                lcd.setCursor( i * 3 - 1, 1 );
+                lcd.write( CHAR_BR_SPLIT );
+            }
+        }
+
+        if ( branch == SEG_CLOSE_BR || branch == SEG_OPENCLOSE_BR ) {
+            lcd.setCursor( i * 3 + 2, 0 );
+            lcd.write( CHAR_BR );
+            lcd.setCursor( i * 3 + 2, 1 );
+            lcd.write( CHAR_BR_CLOSE );
+        }
+
+    }
+}
+
+static int read_button()
+{
+    int value = analogRead( A0 );
+    int best = 0;
+
+    for ( int i = 0; i < 6; i++ ) {
+        if ( abs( value - BUTTON_VALUE_LIST[ i ] ) <
+             abs( value - BUTTON_VALUE_LIST[ best ] ) ) {
+            best = i;
+        }
+    }
+    return best;
 }
 
 static void loop_io()
@@ -189,6 +411,9 @@ static void loop_ladder()
 
 void setup()
 {
+    cmd_grid = new int[ program_width * program_height ];
+    data_grid = new int[ program_width * program_height ];
+    
     // initialize LCD and set up the number of columns and rows:
     lcd.begin( 16, 2 );
 
@@ -208,52 +433,38 @@ void setup()
     // mcp.digitalWrite(0, HIGH);
     // mcp.digitalWrite(1, HIGH);
 
-    lcd.createChar( 0, xioChar );
-    lcd.createChar( 1, xicChar );
-    lcd.createChar( 2, oteChar );
-    lcd.createChar( 3, brChar );
-    lcd.createChar( 4, brOpenChar );
-    lcd.createChar( 5, brCloseChar );
+    lcd.createChar( CHAR_XIO, xioChar );
+    lcd.createChar( CHAR_XIC, xicChar );
+    lcd.createChar( CHAR_OTE, oteChar );
+    lcd.createChar( CHAR_BR, brChar );
+    lcd.createChar( CHAR_BR_OPEN, brOpenChar );
+    lcd.createChar( CHAR_BR_CLOSE, brCloseChar );
+    lcd.createChar( CHAR_BR_SPLIT, brSplitChar );
+    lcd.createChar( CHAR_DOUBLE_BR, doubleBrChar );
+
     // lcd.blink();
     lcd.cursor();
-
-    lcd.setCursor( 0, 0 );
-    lcd.write( byte( 0 ) );
-    lcd.write( '0' );
-    lcd.write( byte( 3 ) );
-    // lcd.write('-');
-    lcd.write( byte( 1 ) );
-    lcd.write( '1' );
-    lcd.write( byte( 3 ) );
-    lcd.print( "--------" );
-    lcd.write( 'a' );
-    lcd.write( byte( 2 ) );
-    lcd.setCursor( 2, 1 );
-    lcd.write( byte( 4 ) );
-    // lcd.write('-');
-    lcd.write( byte( 0 ) );
-    lcd.write( 'a' );
-    lcd.write( byte( 5 ) );
-    // lcd.setCursor(14, 2);
-    // lcd.print("R1");
     lcd.setCursor( 0, 0 );
 
-    render_io();
+    int * cmd_list = rung_cmd_list( 0 );
+    cmd_list[ 0 ] = CMD_OTE;
+    cmd_list[ 1 ] = CMD_XIO;
+    cmd_list[ 2 ] = CMD_BR;
+    cmd_list[ 3 ] = CMD_XIO;
+    cmd_list[ 4 ] = CMD_XIO;
+    cmd_list[ 5 ] = CMD_XIO;
+    cmd_list[ 6 ] = CMD_BR;
+    cmd_list[ 7 ] = CMD_XIO;
+    cmd_list[ 8 ] = CMD_BR;
+    cmd_list[ 9 ] = CMD_NULL;
+
+    render_ladder( 0 );
+    //lcd.write( CHAR_XIC );
+
+
 }
 
-static int read_button()
-{
-    int value = analogRead( A0 );
-    int best = 0;
 
-    for ( int i = 0; i < 6; i++ ) {
-        if ( abs( value - BUTTON_VALUE_LIST[ i ] ) <
-             abs( value - BUTTON_VALUE_LIST[ best ] ) ) {
-            best = i;
-        }
-    }
-    return best;
-}
 
 void loop()
 {
